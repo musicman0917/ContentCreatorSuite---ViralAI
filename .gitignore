@@ -1,0 +1,38 @@
+# ── Secrets ─────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# ── Dependencies / build ────────────────────────────────
+node_modules/
+dist/
+build/
+.vite/
+*.tsbuildinfo
+
+# ── Patch-script backups (from the PowerShell workflow) ──
+*.bak
+*.bak2
+*.*bak
+
+# ── Logs / runtime ──────────────────────────────────────
+*.log
+npm-debug.log*
+pm2.log
+.pm2/
+
+# ── Large local data (should live outside the repo) ─────
+Full VODs extraction/
+ViralAudit history/
+*.mp4
+*.wav
+*.mkv
+*.webm
+
+# ── OS / editor cruft ───────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
