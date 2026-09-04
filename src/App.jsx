@@ -368,8 +368,18 @@ CONTENT MODE: LIVESTREAM CLIP. This was cut from a longer live broadcast — it 
 - Never suggest re-filming, re-recording a line, or restaging a moment. Suggest a different trim point instead.
 - Raw reaction and authenticity ARE the product. Do not penalise unscripted speech, filler words, imperfect framing, or the absence of a written hook.
 - Judge the opening by whether the trim starts close enough to the payoff, not by whether it opens with a scripted hook.
-- Do not expect a loop-back ending. Clips do not loop.` : "";
+- Do not expect a loop-back ending. Clips do not loop.
+- CRITICAL — this applies to every section below, not just the narrative arc: do NOT invent cold-open scroll-away percentages, "pattern interrupt" countdowns, or a fixed hook-window clock anywhere in this review. Those are purpose-shot short-form metrics and this is not purpose-shot short-form. Frame retention entirely around whether the trim in-point sits close enough to the payoff, and frame algorithm fit around the completion/rewatch potential of the clip as already trimmed.` : "";
   const contentModeBlock = `${shopBlock}${liveBlock}`;
+  const hookWindowLine = isLiveClip
+    ? `TRIM CONTEXT: This is a livestream clip, not a scripted open — there is no hook window to hit. The only available lever is the trim in/out point.`
+    : `HOOK WINDOW: ${platformCfg.hookWindow}`;
+  const algorithmAlignmentNote = isLiveClip
+    ? ` Judge this as a trim decision, not a scripted hook — do not reference a hook window or a scroll-away clock.`
+    : "";
+  const retentionPredictionNote = isLiveClip
+    ? ` Base this on trim proximity to the payoff, not a cold-open scroll-away percentage.`
+    : "";
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
@@ -381,7 +391,7 @@ You are doing a FULL VIDEO ANALYSIS — not frame by frame, but the complete pic
 PLATFORM: ${platformCfg.label}
 NICHE: ${nicheCfg?.label || niche}
 DURATION: ${duration}s
-HOOK WINDOW: ${platformCfg.hookWindow}
+${hookWindowLine}
 ${contentModeBlock}
 
 TRANSCRIPT:
@@ -393,8 +403,8 @@ ${frameContext}
 Deliver a complete video analysis covering:
 1. NARRATIVE ARC: Does this video have a clear beginning, middle, and payoff? Does it earn its runtime?
 2. VIRAL POTENTIAL: What is the single most shareable/rewatch-worthy moment and why?
-3. ALGORITHM ALIGNMENT: How well does this video match what ${platformCfg.label} is currently rewarding?
-4. AUDIENCE RETENTION PREDICTION: Where will viewers drop off and why?
+3. ALGORITHM ALIGNMENT: How well does this video match what ${platformCfg.label} is currently rewarding?${algorithmAlignmentNote}
+4. AUDIENCE RETENTION PREDICTION: Where will viewers drop off and why?${retentionPredictionNote}
 5. VERDICT: One punchy paragraph — is this video ready to post, needs work, or needs a complete rethink?
 
 Be direct, specific, and ruthless. No softening. Write like the creator is paying you to tell the truth.` }] }),
