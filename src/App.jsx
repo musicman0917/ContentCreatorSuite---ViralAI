@@ -2418,6 +2418,13 @@ function ChapterGenerator() {
             </div>
           )}
 
+          {result.transcriptTruncated && (
+            <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
+              <AlertTriangle size={12} className="text-amber-400 mt-0.5" />
+              <p className="text-xs text-amber-300 leading-relaxed">This video's transcript was long enough that chapter generation only covers part of it — later sections of a long VOD may be missing chapters.</p>
+            </div>
+          )}
+
           <div className="space-y-1.5">
             {result.chapters.map((c, i) => (
               <div key={i} className="flex items-start gap-3 p-2.5 rounded-lg bg-slate-900/50 border border-slate-800">

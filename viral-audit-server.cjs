@@ -228,6 +228,7 @@ app.post("/generate-chapters", upload.single("video"), async (req, res) => {
   const sessionId = uuidv4().slice(0, 8);
   const videoPath = req.file.path;
   const audioPath = path.join(os.tmpdir(), `viral-audit-audio-${sessionId}.wav`);
+  const tempFiles = [videoPath, audioPath];
 
   console.log(`[${sessionId}] Chapter generation: ${req.file.originalname} (${(req.file.size / 1e6).toFixed(1)} MB)`);
 
@@ -238,13 +239,36 @@ app.post("/generate-chapters", upload.single("video"), async (req, res) => {
     console.log(`[${sessionId}] Extracting audio...`);
     await extractAudio(videoPath, audioPath);
 
+    // Groq's Whisper endpoint rejects large request bodies (413 request_too_large)
+    // past roughly 14 minutes of 16kHz mono WAV. Transcribe in 10-minute chunks
+    // and offset each chunk's segment timestamps back onto the full timeline —
+    // same pattern already used by /scan-vod and /coach-vod for long VODs.
     console.log(`[${sessionId}] Transcribing with Groq Whisper...`);
-    const transcription = await transcribeAudio(audioPath);
+    const chunkSecs = 600;
+    const numChunks = Math.max(1, Math.ceil(duration / chunkSecs));
+    const allSegments = [];
+    for (let ci = 0; ci < numChunks; ci++) {
+      const chunkStart = ci * chunkSecs;
+      const chunkPath = path.join(os.tmpdir(), `chapters-chunk-${sessionId}-${ci}.wav`);
+      tempFiles.push(chunkPath);
+      try {
+        await execAsync(`ffmpeg -y -ss ${chunkStart} -i "${audioPath}" -t ${chunkSecs} "${chunkPath}"`);
+        const t = await transcribeAudio(chunkPath);
+        const offsetSegs = (t.segments || []).map(s => ({ ...s, start: s.start + chunkStart, end: s.end + chunkStart }));
+        allSegments.push(...offsetSegs);
+        console.log(`[${sessionId}] Chunk ${ci + 1}/${numChunks} transcribed (${offsetSegs.length} segs)`);
+      } catch (e) {
+        console.warn(`[${sessionId}] Chunk ${ci} failed:`, e.message.slice(0, 80));
+      }
+    }
 
     console.log(`[${sessionId}] Finding chapter breaks...`);
-    const chapters = await generateYouTubeChapters(transcription.segments, duration, sessionId);
+    const { chapters, truncated } = await generateYouTubeChapters(allSegments, duration, sessionId);
     if (chapters.length < 3) {
       console.warn(`[${sessionId}] Only ${chapters.length} chapter(s) — YouTube needs at least 3 to display them.`);
+    }
+    if (truncated) {
+      console.warn(`[${sessionId}] Transcript exceeded the chapter-prompt limit — coverage may stop before the video ends.`);
     }
 
     const needsHours = duration >= 3600;
@@ -258,6 +282,7 @@ app.post("/generate-chapters", upload.single("video"), async (req, res) => {
       chapters: chapters.map(c => ({ ...c, label: formatYouTubeTimestamp(c.startSec, needsHours) })),
       formattedText,
       meetsYouTubeMinimum: chapters.length >= 3,
+      transcriptTruncated: truncated,
     });
 
     console.log(`[${sessionId}] Done — ${chapters.length} chapters.`);
@@ -270,7 +295,7 @@ app.post("/generate-chapters", upload.single("video"), async (req, res) => {
     res.status(500).json({ error: message, sessionId });
 
   } finally {
-    cleanup(videoPath, audioPath);
+    cleanup(...tempFiles);
     console.log(`[${sessionId}] Temp files cleaned up`);
   }
 });
@@ -1130,7 +1155,7 @@ async function generateYouTubeChapters(segments, duration, sessionId) {
   const transcriptLines = (segments || [])
     .map(s => `[${formatYouTubeTimestamp(s.start, needsHours)}] ${s.text.trim()}`)
     .join("\n");
-  const TRANSCRIPT_LIMIT = 12000;
+  const TRANSCRIPT_LIMIT = 15000; // matches the CCO Review's documented transcript-input limit
   const truncated = transcriptLines.length > TRANSCRIPT_LIMIT;
   const promptTranscript = transcriptLines.slice(0, TRANSCRIPT_LIMIT) +
     (truncated ? "\n[transcript truncated for length — only propose chapters within the range shown above]" : "");
@@ -1161,7 +1186,7 @@ Return ONLY valid JSON in this exact shape:
 {"chapters": [{"startSec": number, "title": "string"}]}`;
 
   const parsed = await runCoachLLM(prompt, sessionId, "chapters", 1200);
-  if (!parsed || !Array.isArray(parsed.chapters)) return [];
+  if (!parsed || !Array.isArray(parsed.chapters)) return { chapters: [], truncated };
 
   // ── Enforce YouTube's actual rules server-side; never trust the model alone ──
   let chapters = parsed.chapters
@@ -1178,7 +1203,7 @@ Return ONLY valid JSON in this exact shape:
       cleaned.push(ch);
     }
   }
-  return cleaned;
+  return { chapters: cleaned, truncated };
 }
 
 function computeOverallGrade(grades) {
