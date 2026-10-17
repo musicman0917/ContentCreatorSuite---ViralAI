@@ -219,6 +219,63 @@ app.post("/analyze", upload.single("video"), async (req, res) => {
 });
 
 
+// ─── YouTube Chapter generation endpoint: POST /generate-chapters ─────────────
+app.post("/generate-chapters", upload.single("video"), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: "No video file uploaded." });
+  }
+
+  const sessionId = uuidv4().slice(0, 8);
+  const videoPath = req.file.path;
+  const audioPath = path.join(os.tmpdir(), `viral-audit-audio-${sessionId}.wav`);
+
+  console.log(`[${sessionId}] Chapter generation: ${req.file.originalname} (${(req.file.size / 1e6).toFixed(1)} MB)`);
+
+  try {
+    const duration = await getVideoDuration(videoPath);
+    console.log(`[${sessionId}] Duration: ${duration.toFixed(1)}s`);
+
+    console.log(`[${sessionId}] Extracting audio...`);
+    await extractAudio(videoPath, audioPath);
+
+    console.log(`[${sessionId}] Transcribing with Groq Whisper...`);
+    const transcription = await transcribeAudio(audioPath);
+
+    console.log(`[${sessionId}] Finding chapter breaks...`);
+    const chapters = await generateYouTubeChapters(transcription.segments, duration, sessionId);
+    if (chapters.length < 3) {
+      console.warn(`[${sessionId}] Only ${chapters.length} chapter(s) — YouTube needs at least 3 to display them.`);
+    }
+
+    const needsHours = duration >= 3600;
+    const formattedText = chapters.map(c => `${formatYouTubeTimestamp(c.startSec, needsHours)} ${c.title}`).join("\n");
+
+    res.json({
+      sessionId,
+      filename: req.file.originalname,
+      duration: Math.round(duration),
+      durationLabel: formatYouTubeTimestamp(duration, needsHours),
+      chapters: chapters.map(c => ({ ...c, label: formatYouTubeTimestamp(c.startSec, needsHours) })),
+      formattedText,
+      meetsYouTubeMinimum: chapters.length >= 3,
+    });
+
+    console.log(`[${sessionId}] Done — ${chapters.length} chapters.`);
+
+  } catch (err) {
+    console.error(`[${sessionId}] Error:`, err.message);
+    let message = err.message || "Unknown error during chapter generation.";
+    if (message.includes("ffmpeg")) message = "ffmpeg error: " + message;
+    if (message.includes("groq") || message.includes("whisper")) message = "Transcription error: " + message;
+    res.status(500).json({ error: message, sessionId });
+
+  } finally {
+    cleanup(videoPath, audioPath);
+    console.log(`[${sessionId}] Temp files cleaned up`);
+  }
+});
+
+
 // ─── URL Analysis endpoint: POST /analyze-url ─────────────────────────────────
 app.post("/analyze-url", express.json(), async (req, res) => {
   const { url } = req.body;
@@ -1056,6 +1113,72 @@ async function runCoachLLM(promptText, sessionId, label, maxTokens = 600) {
     console.warn(`[${sessionId}] LLM ${label} failed:`, e.message.slice(0,80));
     return null;
   }
+}
+
+// ─── YouTube Chapter Generation ───────────────────────────────────────────────
+function formatYouTubeTimestamp(sec, needsHours) {
+  sec = Math.max(0, Math.round(sec));
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  if (needsHours) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+async function generateYouTubeChapters(segments, duration, sessionId) {
+  const needsHours = duration >= 3600;
+  const transcriptLines = (segments || [])
+    .map(s => `[${formatYouTubeTimestamp(s.start, needsHours)}] ${s.text.trim()}`)
+    .join("\n");
+  const TRANSCRIPT_LIMIT = 12000;
+  const truncated = transcriptLines.length > TRANSCRIPT_LIMIT;
+  const promptTranscript = transcriptLines.slice(0, TRANSCRIPT_LIMIT) +
+    (truncated ? "\n[transcript truncated for length — only propose chapters within the range shown above]" : "");
+
+  // Roughly one chapter per 2.5 minutes of content, bounded to a sane range.
+  const targetCount = Math.max(3, Math.min(15, Math.round(duration / 150)));
+
+  const prompt = `You are a YouTube editor creating chapter markers for a video.
+
+VIDEO DURATION: ${formatYouTubeTimestamp(duration, needsHours)}
+
+Below is the transcript with the timestamp of each spoken segment.
+
+TRANSCRIPT:
+${promptTranscript}
+
+Identify the natural topic/segment boundaries and propose YouTube chapter markers.
+
+RULES:
+- The first chapter MUST start at 0 seconds.
+- Each chapter must be at least 10 seconds long.
+- Aim for around ${targetCount} chapters total — fewer is fine if the content doesn't naturally support that many. Never propose only 1 or 2.
+- Titles must be short (under 60 characters), specific, and based on what is actually said. No generic labels like "Part 1" or "Segment 2".
+- Use only timestamps that appear in the transcript above — do not invent times outside its range.
+- Return chapters in strictly increasing time order.
+
+Return ONLY valid JSON in this exact shape:
+{"chapters": [{"startSec": number, "title": "string"}]}`;
+
+  const parsed = await runCoachLLM(prompt, sessionId, "chapters", 1200);
+  if (!parsed || !Array.isArray(parsed.chapters)) return [];
+
+  // ── Enforce YouTube's actual rules server-side; never trust the model alone ──
+  let chapters = parsed.chapters
+    .filter(c => c && typeof c.startSec === "number" && c.title)
+    .map(c => ({ startSec: Math.max(0, Math.round(c.startSec)), title: String(c.title).trim().slice(0, 80) }))
+    .sort((a, b) => a.startSec - b.startSec);
+
+  if (chapters.length > 0) chapters[0].startSec = 0; // first chapter must be 0:00
+
+  const MIN_GAP_SEC = 10;
+  const cleaned = [];
+  for (const ch of chapters) {
+    if (cleaned.length === 0 || ch.startSec - cleaned[cleaned.length - 1].startSec >= MIN_GAP_SEC) {
+      cleaned.push(ch);
+    }
+  }
+  return cleaned;
 }
 
 function computeOverallGrade(grades) {

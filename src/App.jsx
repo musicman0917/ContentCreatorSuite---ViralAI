@@ -2288,6 +2288,162 @@ function ClipScanner() {
 }
 
 
+// ─── YOUTUBE CHAPTER GENERATOR ───────────────────────────────────────────────
+function ChapterGenerator() {
+  const [file, setFile] = useState(null);
+  const [generating, setGenerating] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [progressLabel, setProgressLabel] = useState("");
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState(null);
+  const [copied, setCopied] = useState(false);
+  const fileInputRef = useRef(null);
+
+  const handleFile = (f) => {
+    if (!f || !f.type.startsWith("video/")) { setError("Please upload a valid video file."); return; }
+    setFile(f); setError(null); setResult(null);
+  };
+
+  const clear = () => { setFile(null); setResult(null); setError(null); setProgress(0); };
+
+  const runGenerate = async () => {
+    if (!file) return;
+    setGenerating(true); setError(null); setResult(null); setProgress(0); setCopied(false);
+    let pollTimer = null;
+    try {
+      const formData = new FormData();
+      formData.append("video", file);
+      setProgressLabel("Uploading video...");
+
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `${BACKEND_URL}/generate-chapters`);
+      xhr.upload.onprogress = e => {
+        if (e.lengthComputable) setProgress(Math.round((e.loaded / e.total) * 30));
+      };
+      xhr.upload.onload = () => {
+        setProgress(45);
+        let p = 45;
+        pollTimer = setInterval(() => {
+          p = Math.min(92, p + 3);
+          setProgress(p);
+          setProgressLabel(p < 70 ? "Transcribing with Whisper..." : "Finding chapter breaks...");
+        }, 1500);
+        setProgressLabel("Transcribing with Whisper...");
+      };
+
+      const data = await new Promise((resolve, reject) => {
+        xhr.onload = () => {
+          if (xhr.status === 200) resolve(JSON.parse(xhr.responseText));
+          else reject(new Error(JSON.parse(xhr.responseText)?.error || "Chapter generation failed"));
+        };
+        xhr.onerror = () => reject(new Error("Network error — is the server running?"));
+        xhr.send(formData);
+      });
+
+      setProgress(100);
+      setProgressLabel("Done!");
+      setResult(data);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      clearInterval(pollTimer);
+      setGenerating(false);
+    }
+  };
+
+  const copyChapters = () => {
+    if (!result?.formattedText) return;
+    navigator.clipboard.writeText(result.formattedText);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-xl border border-slate-800 bg-[#0d1120] p-5 space-y-4">
+        <h3 className="heading text-sm font-semibold text-slate-200 flex items-center gap-2">
+          <Clock size={14} className="text-violet-400" />YouTube Timestamps
+          <Tag variant="accent">Beta</Tag>
+        </h3>
+        <p className="text-xs text-slate-500 leading-relaxed">Upload a video and get YouTube chapter markers generated from the transcript — timestamped, topic-aware, ready to paste into your description.</p>
+
+        {!file ? (
+          <button onClick={() => fileInputRef.current?.click()}
+            className="w-full py-3 rounded-lg border-2 border-dashed border-slate-700 text-xs text-slate-500 hover:border-slate-600 flex items-center justify-center gap-2">
+            <Upload size={12} />Click to select a video file
+          </button>
+        ) : (
+          <div className="flex items-center gap-2 p-3 rounded-lg bg-slate-900 border border-slate-700">
+            <FileVideo size={12} className="text-slate-500" />
+            <span className="text-xs text-slate-400 truncate flex-1">{file.name}</span>
+            <Tag variant="default">{(file.size / 1e6).toFixed(1)} MB</Tag>
+            <button onClick={clear}><X size={12} className="text-slate-500 hover:text-red-400" /></button>
+          </div>
+        )}
+        <input ref={fileInputRef} type="file" accept="video/*" className="hidden" onChange={e => handleFile(e.target.files?.[0] || null)} />
+
+        {error && (
+          <div className="flex items-start gap-2 p-3 rounded-lg bg-red-500/10 border border-red-500/20">
+            <XCircle size={12} className="text-red-400 mt-0.5" /><p className="text-xs text-red-400">{error}</p>
+          </div>
+        )}
+
+        {generating && (
+          <div className="space-y-2">
+            <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
+              <div className="h-full bg-violet-500 rounded-full transition-all duration-500" style={{ width: `${progress}%` }} />
+            </div>
+            <p className="text-xs text-slate-500 text-center">{progressLabel}</p>
+          </div>
+        )}
+
+        <button onClick={runGenerate} disabled={!file || generating}
+          className="w-full py-3 rounded-xl text-sm font-bold heading flex items-center justify-center gap-2 disabled:opacity-40"
+          style={{ background: "linear-gradient(135deg,#7c3aed,#4f46e5)", color: "white" }}>
+          {generating ? <><Loader2 size={14} className="animate-spin" />Generating...</> : <><Clock size={14} />Generate Chapters</>}
+        </button>
+      </div>
+
+      {result && (
+        <div className="rounded-xl border border-slate-800 bg-[#0d1120] p-5 space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="heading text-sm font-semibold text-slate-200">{result.chapters.length} Chapters Found</h3>
+            <Tag variant="blue"><Clock size={9} />{result.durationLabel}</Tag>
+          </div>
+
+          {!result.meetsYouTubeMinimum && (
+            <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
+              <AlertTriangle size={12} className="text-amber-400 mt-0.5" />
+              <p className="text-xs text-amber-300 leading-relaxed">YouTube requires at least 3 chapters before it will display them under the video. This video only produced {result.chapters.length} — it may be too short or too uniform in topic to chapterize well.</p>
+            </div>
+          )}
+
+          <div className="space-y-1.5">
+            {result.chapters.map((c, i) => (
+              <div key={i} className="flex items-start gap-3 p-2.5 rounded-lg bg-slate-900/50 border border-slate-800">
+                <span className="font-mono text-xs text-violet-400 shrink-0 mt-0.5">{c.label}</span>
+                <span className="text-xs text-slate-300">{c.title}</span>
+              </div>
+            ))}
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs text-slate-500">Paste into your YouTube description</span>
+              <button onClick={copyChapters}
+                className="px-3 py-1.5 rounded-lg border border-slate-700 text-xs text-slate-400 hover:border-violet-500/50 hover:text-violet-300 flex items-center gap-1">
+                <CheckSquare size={10} />{copied ? "Copied!" : "Copy"}
+              </button>
+            </div>
+            <pre className="p-3 rounded-lg bg-slate-900 border border-slate-800 text-xs text-slate-400 font-mono whitespace-pre-wrap leading-relaxed">{result.formattedText}</pre>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 export default function ViralAuditAI() {
   const [script, setScript] = useState("");
   const [platform, setPlatform] = useState("tiktok");
@@ -2383,7 +2539,7 @@ export default function ViralAuditAI() {
         <aside className="space-y-4">
           {/* Input mode tabs */}
           <div className="flex flex-wrap gap-1 bg-[#0d1120] border border-slate-800 rounded-xl p-1">
-            {[["text", "Script / Text", Scissors], ["video", "Video Upload", FileVideo], ["url", "URL Import", Hash], ["scanner", "Clip Scanner", Film], ["coach", "Stream Coach", Award]].map(([mode, label, Icon]) => (
+            {[["text", "Script / Text", Scissors], ["video", "Video Upload", FileVideo], ["url", "URL Import", Hash], ["scanner", "Clip Scanner", Film], ["coach", "Stream Coach", Award], ["chapters", "YouTube Timestamps", Clock]].map(([mode, label, Icon]) => (
               <button key={mode} onClick={() => setInputMode(mode)}
                 className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-3 rounded-lg text-xs font-medium ${inputMode === mode ? "bg-violet-500/20 text-violet-300 border border-violet-500/30" : "text-slate-500"}`}>
                 <Icon size={12} />{label}
@@ -2433,7 +2589,7 @@ export default function ViralAuditAI() {
           )}
 
           {/* URL import */}
-          {inputMode === "scanner" && (<ClipScanner />)}{inputMode === "coach" && (<StreamCoach />)}
+          {inputMode === "scanner" && (<ClipScanner />)}{inputMode === "coach" && (<StreamCoach />)}{inputMode === "chapters" && (<ChapterGenerator />)}
           {inputMode === "url" && (
             <div className="rounded-xl border border-slate-800 bg-[#0d1120] overflow-hidden">
               <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
