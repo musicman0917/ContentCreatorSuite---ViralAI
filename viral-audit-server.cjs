@@ -1166,31 +1166,37 @@ function analyzeFillerWords(segments, trueStartSec, profile = null) {
 }
 
 async function runCoachLLM(promptText, sessionId, label, maxTokens = 600) {
-  try {
-    const Groq = require("groq-sdk");
-    const groqClient = new Groq({ apiKey: process.env.GROQ_API_KEY });
-    const model = await getBestGroqModel();
-    const response = await groqClient.chat.completions.create({
-      model,
-      max_tokens: maxTokens,
-      messages: [{ role: "user", content: promptText }],
-      response_format: { type: "json_object" },
-    });
-    const text = response.choices[0].message.content;
-    console.log(`[${sessionId}] LLM ${label} done`);
-    return JSON.parse(text);
-  } catch(e) {
-    console.warn(`[${sessionId}] LLM ${label} failed:`, e.message.slice(0,80));
-    // Self-heal: if the cached model turns out to be incompatible with this
-    // call shape (even after passing getBestGroqModel's validation), drop the
-    // cache so the next call re-resolves instead of staying stuck on a
-    // broken model for the rest of the process's life.
-    if (/model/i.test(e.message)) {
-      console.warn(`[${sessionId}] Invalidating cached Groq model (was: ${_cachedGroqModel}) and retrying selection next call.`);
-      _cachedGroqModel = null;
+  const Groq = require("groq-sdk");
+  const groqClient = new Groq({ apiKey: process.env.GROQ_API_KEY });
+
+  // JSON-mode generation is occasionally flaky even on a working, validated
+  // model (Groq errors with "Failed to generate JSON..." on a subset of
+  // otherwise-identical calls) — retry once before giving up.
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const model = await getBestGroqModel();
+      const response = await groqClient.chat.completions.create({
+        model,
+        max_tokens: maxTokens,
+        messages: [{ role: "user", content: promptText }],
+        response_format: { type: "json_object" },
+      });
+      const text = response.choices[0].message.content;
+      console.log(`[${sessionId}] LLM ${label} done${attempt > 1 ? " (after retry)" : ""}`);
+      return JSON.parse(text);
+    } catch (e) {
+      console.warn(`[${sessionId}] LLM ${label} failed${attempt === 1 ? ", retrying once" : ""}:`, e.message.slice(0, 80));
+      // Self-heal: if the cached model turns out to be incompatible with this
+      // call shape (even after passing getBestGroqModel's validation), drop
+      // the cache so the retry (or next call) re-resolves instead of staying
+      // stuck on a broken model for the rest of the process's life.
+      if (/model/i.test(e.message)) {
+        console.warn(`[${sessionId}] Invalidating cached Groq model (was: ${_cachedGroqModel}).`);
+        _cachedGroqModel = null;
+      }
     }
-    return null;
   }
+  return null;
 }
 
 // ─── YouTube Chapter Generation ───────────────────────────────────────────────
@@ -1236,7 +1242,7 @@ RULES:
 Return ONLY valid JSON in this exact shape:
 {"chapters": [{"startSec": number, "title": "string"}]}`;
 
-  const parsed = await runCoachLLM(prompt, sessionId, `chapters-chunk${chunkIndex}`, 400);
+  const parsed = await runCoachLLM(prompt, sessionId, `chapters-chunk${chunkIndex}`, 800);
   if (!parsed || !Array.isArray(parsed.chapters)) return { chapters: [], failed: true, truncated };
 
   const chapters = parsed.chapters
