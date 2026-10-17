@@ -2425,6 +2425,13 @@ function ChapterGenerator() {
             </div>
           )}
 
+          {result.chunksFailed > 0 && (
+            <div className="flex items-start gap-2 p-3 rounded-lg bg-red-500/10 border border-red-500/20">
+              <XCircle size={12} className="text-red-400 mt-0.5" />
+              <p className="text-xs text-red-300 leading-relaxed">{result.chunksFailed} of {result.chunksTotal} audio chunks failed to transcribe (Groq rate limit/quota is the usual cause on very long videos) — chapters may have gaps where those chunks would have been. Check server logs for details.</p>
+            </div>
+          )}
+
           <div className="space-y-1.5">
             {result.chapters.map((c, i) => (
               <div key={i} className="flex items-start gap-3 p-2.5 rounded-lg bg-slate-900/50 border border-slate-800">

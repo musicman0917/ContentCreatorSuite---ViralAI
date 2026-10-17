@@ -247,6 +247,8 @@ app.post("/generate-chapters", upload.single("video"), async (req, res) => {
     const chunkSecs = 600;
     const numChunks = Math.max(1, Math.ceil(duration / chunkSecs));
     const allSegments = [];
+    let failedChunks = 0;
+    let lastChunkError = null;
     for (let ci = 0; ci < numChunks; ci++) {
       const chunkStart = ci * chunkSecs;
       const chunkPath = path.join(os.tmpdir(), `chapters-chunk-${sessionId}-${ci}.wav`);
@@ -258,8 +260,16 @@ app.post("/generate-chapters", upload.single("video"), async (req, res) => {
         allSegments.push(...offsetSegs);
         console.log(`[${sessionId}] Chunk ${ci + 1}/${numChunks} transcribed (${offsetSegs.length} segs)`);
       } catch (e) {
+        failedChunks++;
+        lastChunkError = e.message;
         console.warn(`[${sessionId}] Chunk ${ci} failed:`, e.message.slice(0, 80));
       }
+    }
+
+    if (allSegments.length === 0) {
+      throw new Error(numChunks > 1
+        ? `Transcription failed for all ${numChunks} audio chunks (last error: ${String(lastChunkError || "unknown").slice(0, 150)}). Likely a Groq rate limit/quota on a video this long, or an expired GROQ_API_KEY — check server logs.`
+        : `Transcription failed (${String(lastChunkError || "unknown error").slice(0, 150)}).`);
     }
 
     console.log(`[${sessionId}] Finding chapter breaks...`);
@@ -283,6 +293,9 @@ app.post("/generate-chapters", upload.single("video"), async (req, res) => {
       formattedText,
       meetsYouTubeMinimum: chapters.length >= 3,
       transcriptTruncated: truncated,
+      chunksTranscribed: numChunks - failedChunks,
+      chunksTotal: numChunks,
+      chunksFailed: failedChunks,
     });
 
     console.log(`[${sessionId}] Done — ${chapters.length} chapters.`);
