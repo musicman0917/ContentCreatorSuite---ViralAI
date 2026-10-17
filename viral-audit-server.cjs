@@ -622,39 +622,59 @@ function scoreHook(firstSegmentText) {
   return { score: Math.min(40, Math.max(0, score)), type };
 }
 
-// Auto-selects best available Groq chat model
+// Auto-selects best available Groq chat model. Groq's catalog includes
+// several non-chat model families (speech-to-text, text-to-speech, vision,
+// moderation, agentic "compound" tools) alongside plain chat models, and
+// which ones exist/are deprecated shifts over time — a name-pattern
+// blacklist here previously let a text-to-speech model ("canopylabs/
+// orpheus-v1-english") through because its name just didn't contain
+// "whisper" or "vision". Rather than keep extending that blacklist, each
+// candidate is validated with a real (tiny) completion call before being
+// cached, so an incompatible model can never be silently selected again.
 let _cachedGroqModel = null;
 async function getBestGroqModel() {
   if (_cachedGroqModel) return _cachedGroqModel;
+  const Groq = require("groq-sdk");
+  const groqClient = new Groq({ apiKey: process.env.GROQ_API_KEY });
+
+  let candidates = ["llama-3.1-8b-instant"];
   try {
-    const Groq = require("groq-sdk");
-    const groqClient = new Groq({ apiKey: process.env.GROQ_API_KEY });
     const list = await groqClient.models.list();
+    const available = list.data.map(m => m.id);
+    console.log(`[groq] Available models: ${available.join(", ")}`);
     const preferred = [
       "llama-3.1-8b-instant",
-      "llama-3.2-3b-preview", 
+      "llama-3.3-70b-versatile",
+      "llama-3.2-3b-preview",
       "llama3-8b-8192",
+      "llama3-70b-8192",
       "mixtral-8x7b-32768",
       "gemma2-9b-it",
     ];
-    const available = list.data.map(m => m.id);
-    console.log(`[groq] Available models: ${available.join(", ")}`);
-    for (const model of preferred) {
-      if (available.includes(model)) {
-        _cachedGroqModel = model;
-        console.log(`[groq] Selected model: ${model}`);
-        return model;
-      }
-    }
-    // Fallback: pick any chat model that is not whisper
-    const fallback = available.find(m => !m.includes("whisper") && !m.includes("vision"));
-    _cachedGroqModel = fallback || "llama-3.1-8b-instant";
-    console.log(`[groq] Fallback model: ${_cachedGroqModel}`);
-    return _cachedGroqModel;
-  } catch(e) {
-    console.warn("[groq] Model list failed, using default:", e.message.slice(0, 60));
-    return "llama-3.1-8b-instant";
+    const NON_CHAT = /whisper|vision|tts|orpheus|playai|guard|moderation|compound|distil|embed/i;
+    candidates = [
+      ...preferred.filter(m => available.includes(m)),
+      ...available.filter(m => !NON_CHAT.test(m)),
+    ];
+    candidates = [...new Set(candidates)]; // dedupe, preserve preference order
+  } catch (e) {
+    console.warn("[groq] Model list failed, falling back to defaults:", e.message.slice(0, 60));
   }
+
+  for (const model of candidates) {
+    try {
+      await groqClient.chat.completions.create({ model, max_tokens: 5, messages: [{ role: "user", content: "hi" }] });
+      _cachedGroqModel = model;
+      console.log(`[groq] Selected model: ${model}`);
+      return model;
+    } catch (e) {
+      console.warn(`[groq] Model ${model} failed validation, trying next:`, e.message.slice(0, 80));
+    }
+  }
+
+  console.warn("[groq] No candidate model validated — defaulting to llama-3.1-8b-instant, calls may still fail.");
+  _cachedGroqModel = "llama-3.1-8b-instant";
+  return _cachedGroqModel;
 }
 
 async function scoreWithClaude(transcript, formatProfile, duration, topicKeywords) {
@@ -1161,6 +1181,14 @@ async function runCoachLLM(promptText, sessionId, label, maxTokens = 600) {
     return JSON.parse(text);
   } catch(e) {
     console.warn(`[${sessionId}] LLM ${label} failed:`, e.message.slice(0,80));
+    // Self-heal: if the cached model turns out to be incompatible with this
+    // call shape (even after passing getBestGroqModel's validation), drop the
+    // cache so the next call re-resolves instead of staying stuck on a
+    // broken model for the rest of the process's life.
+    if (/model/i.test(e.message)) {
+      console.warn(`[${sessionId}] Invalidating cached Groq model (was: ${_cachedGroqModel}) and retrying selection next call.`);
+      _cachedGroqModel = null;
+    }
     return null;
   }
 }
