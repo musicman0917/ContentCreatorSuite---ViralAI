@@ -2432,6 +2432,13 @@ function ChapterGenerator() {
             </div>
           )}
 
+          {result.llmChunksFailed > 0 && (
+            <div className="flex items-start gap-2 p-3 rounded-lg bg-red-500/10 border border-red-500/20">
+              <XCircle size={12} className="text-red-400 mt-0.5" />
+              <p className="text-xs text-red-300 leading-relaxed">Chapter-finding failed for {result.llmChunksFailed} of {result.chunksTotal} transcribed chunks — those stretches of the video have no proposed chapters. Check server logs for details.</p>
+            </div>
+          )}
+
           <div className="space-y-1.5">
             {result.chapters.map((c, i) => (
               <div key={i} className="flex items-start gap-3 p-2.5 rounded-lg bg-slate-900/50 border border-slate-800">
