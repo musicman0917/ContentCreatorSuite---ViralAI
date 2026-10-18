@@ -650,11 +650,21 @@ async function getBestGroqModel() {
       "llama3-70b-8192",
       "mixtral-8x7b-32768",
       "gemma2-9b-it",
+      "qwen/qwen3.8-27b", // observed reliable for strict JSON mode when other candidates weren't
     ];
     const NON_CHAT = /whisper|vision|tts|orpheus|playai|guard|moderation|compound|distil|embed/i;
+    // gpt-oss and similar reasoning models spend part of their output budget on
+    // internal reasoning before the final answer, which made them noticeably
+    // flakier at strict JSON mode in practice (intermittent "Failed to
+    // generate/validate JSON" on otherwise-identical calls) — still usable as a
+    // last resort, just not tried before plainer instruct models.
+    const DEPRIORITIZE = /gpt-oss|allam/i;
+    const general = available.filter(m => !NON_CHAT.test(m) && !DEPRIORITIZE.test(m));
+    const deprioritized = available.filter(m => !NON_CHAT.test(m) && DEPRIORITIZE.test(m));
     candidates = [
       ...preferred.filter(m => available.includes(m)),
-      ...available.filter(m => !NON_CHAT.test(m)),
+      ...general,
+      ...deprioritized,
     ];
     candidates = [...new Set(candidates)]; // dedupe, preserve preference order
   } catch (e) {
